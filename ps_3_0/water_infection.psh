@@ -1,0 +1,558 @@
+// (C)2008 S2 Games
+// terrain_color.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Headers
+//=============================================================================
+#include "../common/common.h"
+#include "../common/fog.h"
+#if (SHADOWS == 1)
+#include "shadowed.h"
+#endif
+//=============================================================================
+// Global variables
+//=============================================================================
+float3		vSunPositionWorld;
+
+float3		vAmbient;
+float3		vSunColor;
+
+float2		vSpec;
+
+float		fWatermapSize;
+
+float		fSpecularLevel;
+
+float		fTime;
+float3		vDiffuseColor;
+
+float3		vTextureParams;
+float3		vAlphaParams;
+
+float3 		vFakeSpecDir;
+float3 		vFakeSpecColor;
+
+float4 FresnelParams = float4(0.3, 0.3, 0.5, 0.5);
+float bubbleEmissive = 0.1f;
+
+#define DPI 6.28318548
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float ReflectionPow : COLOR0;
+	float4 Texcoord0 : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float4 PositionScreen : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#if (LIGHTING_QUALITY <= 1 || FALLOFF_QUALITY == 0)
+	float3 PositionOffset : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#endif
+#if (LIGHTING_QUALITY == 0)
+	float3 Normal : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float3 Tangent : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float3 Binormal : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#elif (LIGHTING_QUALITY == 1)
+	float3 HalfAngle : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float3 SunLight : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float3 Reflect : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#elif (LIGHTING_QUALITY == 2)
+	float3 DiffLight : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#endif
+#if (SHADOWS == 1)
+	float4 TexcoordLight : TEXCOORDX; // Texcoord in light texture space
+		#include "../common/inc_texcoord.h"
+#endif
+#ifdef CLOUDS
+	float2 TexcoordClouds : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#endif
+#if ((FOG_QUALITY == 1 && FOG_TYPE != 0) || (FALLOFF_QUALITY == 1 && (FOG_TYPE != 0 || SHADOWS == 1)) || FOG_OF_WAR == 1)
+	float4 Last : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+#endif
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler	waterflowmap;
+
+sampler reflection;
+
+#if (WATER_QUALITY != 2)	
+sampler	waterdistortion;
+#endif
+
+#if (FOG_OF_WAR == 1)
+sampler fogofwar;
+#endif
+
+#ifndef RXGB_NORMALMAP
+sampler water_normal;
+#else
+sampler water_normal_0;
+sampler water_normal_1;
+#endif
+
+sampler bubbing_mask01;
+sampler bubbing_mask;
+sampler bubbing_normal01;
+sampler bubbing_normal2;
+sampler water_color;//infection_color
+
+
+float2 rotate2D(float2 p, float2 center, float radians);
+
+void GenerateWaterNormal(float2 uv, float fTimeSmall, out float3 waterNormal);
+void GenerateBubbingFactor(float2 uv, float fTimeSmall, out float fNormalMask, out float3 fBubbingNormal);
+void GenerateLightBand(float2 uv, float fTimeSmall, float fNormalMask, out float fBandColor0, out float4 vBandColor);
+void GenerateBubbingDiffuse(float2 uv, float fTimeSmall, float fBumpHeight, float2 vTangent, float4 vBandColor, out float4 vBubbingColor);
+void GenerateFoam(float2 uv, float fTimeSmall, float fBumpHeight, float2 vTangent, float fBandColor0, out float fFoamMask, out float4 vFoamColor);
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+	
+#if (LIGHTING_QUALITY <= 1)
+	float3 vCamDirection = -normalize(In.PositionOffset);
+#endif
+
+#if (FOG_TYPE != 0 || SHADOWS == 1)
+	#if (FALLOFF_QUALITY == 1)
+		float fCamDistance = In.Last.z;
+	#else
+		float fCamDistance = length(In.PositionOffset);
+	#endif
+#endif
+
+	//
+	// Shadowing
+	//
+	
+#if (SHADOWS == 1)
+	float fShadow = ShadowedD(In.TexcoordLight, fCamDistance);
+#else // SHADOWS == 0
+	float fShadow = 1.0f;
+#endif
+	
+	//
+	// Flowmap Texture
+	//
+	//vFlowmap.z is diffuse xy is direction
+	float3 vFlowmap = tex2D(waterflowmap, (In.Texcoord0.zw + 0.5f) * fWatermapSize).rgb;
+
+	//
+	// Lighting
+	//
+	
+#if (LIGHTING != 0)
+
+	//bubbing normals
+	float fNormalMask = 0.0f;
+	float3 fBubbingNormal = 0.0f;
+	float2 uv = In.Texcoord0.xy * vTextureParams.xy;
+	float fTimeSmall = fTime;
+	float3 vTexNormal = 0.0f;
+
+	GenerateWaterNormal(uv, fTimeSmall, vTexNormal);
+
+	GenerateBubbingFactor(uv, fTimeSmall, fNormalMask, fBubbingNormal);
+
+	//band
+	float fBandColor0 = 0.0f;
+	float4 vBandColor = 0.0f;
+
+	GenerateLightBand(uv, fTimeSmall, fNormalMask, fBandColor0, vBandColor);
+
+	#if (LIGHTING_QUALITY <= 1)
+		vTexNormal = lerp(vTexNormal, fBubbingNormal, fNormalMask);
+		float3 vNormal = normalize(vTexNormal);//fBubbingNormal);
+	#endif
+
+	//bubbing lighting
+	float fBumpHeight = vTexNormal.x + vTexNormal.y;
+	float4 vBubbingColor = 0;
+
+#if (LIGHTING_QUALITY == 0)
+	float2 vTangent = In.Tangent.xy;
+#else
+	float2 vTangent = float2(1.0f, 0.0f);
+#endif
+
+	GenerateBubbingDiffuse(uv, fTimeSmall, fBumpHeight, vTangent, vBandColor, vBubbingColor);
+
+#if (LIGHTING_QUALITY == 0)
+	//foam
+	float fFoamMask = 1.0f;
+	float4 vFoamColor = 0.0f;
+
+	GenerateFoam(uv, fTimeSmall, fBumpHeight, vTangent, fBandColor0, fFoamMask, vFoamColor);
+
+	vBubbingColor = lerp(vFoamColor, vBubbingColor, fFoamMask);
+#endif
+
+	//diffuse
+	float3 vEmissive = vBandColor.rgb * bubbleEmissive;
+	float3 cDiffuseColor = vBubbingColor.rgb;
+
+	//
+	// Reflection
+	//
+	float2 vSceneTexcoord = In.PositionScreen.xy / In.PositionScreen.w;
+	vSceneTexcoord.xy += vTexNormal.xy * 0.03f;
+
+#if (LIGHTING_QUALITY <= 1)
+	//Angle
+	float fRefAngle = 1.0f - saturate(dot(float3(pow(vCamDirection.xyz, 3.0f)), vNormal.xyz));
+	float fFresnel = In.ReflectionPow * vAlphaParams.y * vFlowmap.z * fRefAngle;
+
+#if (LIGHTING != 0)
+#if (LIGHTING_QUALITY == 0 || defined(REFLECTIONS))
+	float3 cReflectionColor = tex2D(reflection, vSceneTexcoord).rgb;
+	cReflectionColor = lerp(cReflectionColor, FresnelParams.rgb, FresnelParams.a);
+#else
+	float3 cReflectionColor = FresnelParams.rgb;
+#endif//reflection
+
+	cDiffuseColor = lerp(cDiffuseColor, cReflectionColor, fFresnel);
+#endif
+#endif
+	
+	float3 vDiffuse = vAmbient;
+	float3 vSpecular = 0;
+	float fSpecular = vSpec.x;	
+		
+	#if (LIGHTING_QUALITY == 2)
+		vDiffuse = (vDiffuse * saturate(dot(vTexNormal.xyz, float3(-1.0, -1.0, 1.0))) + vSunColor) * fShadow;
+		vSpecular += pow(saturate(dot(vTexNormal.xyz, float3(-0.25f, -0.25f, 0.935f))), vSpec.y * 0.3f) * fSpecular * fShadow;	
+	#else // 0 or 1
+		// Sun
+		#if (LIGHTING_QUALITY == 1)
+			float3 vLight = normalize(In.SunLight);
+			float3 vHalfAngle = normalize(In.HalfAngle);
+
+		#else
+			float3 vLight = vSunPositionWorld.xyz;		
+			float3 vHalfAngle = normalize(vLight + vCamDirection);
+		#endif
+		
+		float2 vLit; // x = diffuse, y = specular
+		
+		vLit.x = dot(vNormal, vLight);
+		#if (LIGHTING_QUALITY == 1)
+		vLit.y = saturate(pow(dot(vNormal, vHalfAngle), vSpec.y) * fSpecular * vLit.x);
+		#else
+		vLit.y = saturate(pow(dot(vNormal, vHalfAngle), vSpec.y) * fSpecular * vLit.x);
+		#endif
+		vLit *=  fShadow;
+		vDiffuse += vSunColor * vLit.x;
+		vSpecular += vSunColor * vLit.y;
+
+	#endif // LIGHTING_QUALITY
+
+
+//diffuse
+#if (LIGHTING_QUALITY == 0)
+	float3 vFinalColor = cDiffuseColor.rgb * vDiffuse;
+	float fAlpha = vAlphaParams.x * vFlowmap.z;
+#else
+	float3 vFinalColor = cDiffuseColor.rgb * vDiffuse * 0.5f;
+	float fAlpha = vAlphaParams.x * vFlowmap.z * 2;
+#endif
+
+#if (LIGHTING_QUALITY == 0)
+	float3 cWaterDistortionColor = tex2D(waterdistortion, vSceneTexcoord.xy).rgb;
+	vFinalColor = lerp(vFinalColor * vFlowmap.z + cWaterDistortionColor.rgb, vFinalColor, fAlpha);
+#endif
+
+#if defined(FAKE_SPEC) && LIGHTING_QUALITY == 0
+	//
+	//	fake specular
+	//
+	float3 vHalfAngleFake = normalize(vFakeSpecDir + vCamDirection);
+	float fLitSpecFake = pow(saturate(dot(vNormal, vHalfAngleFake)), vSpec.y) * fSpecular;
+	vSpecular += fLitSpecFake * vFakeSpecColor;
+#endif
+
+	vFinalColor += vSpecular * fSpecularLevel * vFlowmap.z;
+	vFinalColor += vEmissive;
+
+//
+// Fog
+//
+
+#if (FOG_TYPE != 0) // FOG_NONE
+	#if (FOG_QUALITY == 1)
+		float fFog = In.Last.w;
+	#else
+		float fFog = FogD(fCamDistance);
+	#endif
+#else
+	float fFog = 0.0f;
+#endif
+	
+#if (FOG_OF_WAR == 1)
+	vFinalColor *= tex2D(fogofwar, In.Last.xy).a;
+#endif
+
+#if (WATER_QUALITY != 0 || LIGHTING_QUALITY >= 1)
+	Out.Color.rgb = vFinalColor;
+#else
+	Out.Color.rgb = lerp(vFinalColor, vFogColor, fFog);
+#endif
+
+	Out.Color.a = fAlpha;
+#else // LIGHTING == 0
+	Out.Color = float4(0,0,0,1);
+#endif
+
+	return Out;
+}
+
+//0:small 1:medium 2:big
+
+//this function can be optimized by passing cos sin result from cpu
+float2 rotate2D(float2 p, float2 center, float radians)
+{
+	float2 v = p - center;
+	float2 v0 = float2(cos(radians), -sin(radians));
+	float2 v1 = float2(-v0.y, v0.x);
+	float2 pnew = float2(dot(v, v0), dot(v, v1)) + center;
+
+	return pnew;
+}
+
+float2 wave_normal_params = float2(1, 20);//(wave_normal_speed, wave_nromal_tilling)
+
+void GenerateWaterNormal(float2 uv, float fTimeSmall, out float3 waterNormal)
+{
+	float fTimeSmall0 = fTimeSmall * wave_normal_params.x;
+	float4 uv0 = uv.xyxy * wave_normal_params.y;
+	float4 uv1 = uv0;
+	uv0 = uv0 + float4(-0.1f, 0, 0, -0.07f) * fTimeSmall0;
+	uv1 = uv1 + float4(0, -0.07f, -0.07f, 0.07f) * fTimeSmall0;
+
+#ifndef RXGB_NORMALMAP
+	float3 normalmap0 = tex2D(water_normal, uv0.xy).rgb;
+	float3 normalmap1 = tex2D(water_normal, uv0.zw).rgb;
+	float3 normalmap2 = tex2D(water_normal, uv1.xy).rgb;
+	float3 normalmap3 = tex2D(water_normal, uv1.zw).rgb;
+#else
+	float3 normalmap0 = tex2D(water_normal_0, uv0.xy).agb;
+	float3 normalmap1 = tex2D(water_normal_0, uv0.zw).agb;
+	float3 normalmap2 = tex2D(water_normal_0, uv1.xy).agb;
+	float3 normalmap3 = tex2D(water_normal_0, uv1.zw).agb;
+#endif
+
+	float3 normalMap = (normalmap0 + normalmap1 + normalmap2 + normalmap3) * 0.5 - 1;
+	normalMap = lerp(normalMap, float3(0,0,1), 0.7);
+
+	waterNormal = normalize(normalMap);
+}
+
+float bubbingTilling;// = 12;
+float3 irregularIntensity;// = float3(3,2,3);
+float3 appearSpeed;// = float3(0.5,1,0.5);
+float2 bubbingParams;// = float2(0.005, 3); //(bubbingRotateSpeed, small_bubbing_density_intensity)
+
+void GenerateBubbingFactor(float2 uv, float fTimeSmall, out float fNormalMask, out float3 fBubbingNormal)
+{
+	//////////////////////////////////////////
+
+	float2 uv0 = uv * bubbingTilling;
+	float2 uv1 = rotate2D(uv0, 0, bubbingParams.x * fTimeSmall);
+
+	float maskA = tex2D(bubbing_mask, uv1).a;
+
+	//bubbing_02_03
+	float3 maskRGB = tex2D(bubbing_mask, uv0).rgb;
+	float3 maskRGB0 = maskRGB * maskA;
+	float3 fTimeScale = fTimeSmall * appearSpeed * 2+ maskRGB0 * irregularIntensity;//can be optimized
+	fTimeScale = sin(DPI * fTimeScale) * maskRGB0;
+	float4 bubbingnormal01 = (tex2D(bubbing_normal01, uv0) * 2.0f - 1.0f) * 2 * fTimeScale.ggbb;
+	float3 bubbingnormal0 = float3(bubbingnormal01.xy, 0.0f);
+	float3 bubbingnormal1 = float3(bubbingnormal01.zw, 0.0f);
+
+
+	//mask_02
+	float fTimeMask1_1 = fTimeSmall * 0.002f;
+	float2 uvMask1 = rotate2D(1.5f * uv, floor(uv), fTimeMask1_1);
+	float mask1Result = tex2D(bubbing_mask01, uvMask1).b;
+	mask1Result = saturate(mask1Result * 1.5f);
+
+
+	//bubbing_02_03_normal_mask
+	float fNormalMask02 = (maskRGB0.g + maskRGB0.b) * mask1Result * bubbingParams.y;
+
+#if (LIGHTING_QUALITY == 0)
+	//bubbing_01
+	float3 bubbingnormal2 = float3(tex2D(bubbing_normal2, uv0).xy * 2 - 1, 0);
+	bubbingnormal2 = bubbingnormal2 * fTimeScale.r * 2;
+
+	//mask_01
+	float2 mask2SampleResult = 0;
+	float2 mask2Result = 0;
+	float2 uvMask2_0 = bubbingTilling * 0.25f * uv;
+
+	//mask 2 big 1
+	float fTimeMask2_1 = floor(frac(0.05f * fTimeSmall) * 4.0f) * 0.25f;
+	float2 uvMask2_1 =  uvMask2_0 + fTimeMask2_1;
+	mask2SampleResult.y = tex2D(bubbing_mask01, uvMask2_1).g;
+	mask2Result.y = sin(DPI * fTimeSmall * 0.2f);
+
+	//mask 2 big 2
+	float fTimeMask2_3 = floor(frac(fTimeSmall * 0.00625f) * 8.0f) * 0.125f;
+	float2 uvMask2_2 = uvMask2_0 + fTimeMask2_3;
+	mask2SampleResult.x = tex2D(bubbing_mask01, uvMask2_2).r;
+	mask2Result.x = sin(DPI * fTimeSmall * 0.05f);
+
+	mask2Result = mask2Result * mask2SampleResult * 2.5f;
+
+	float fMaskResult = mask1Result * (mask2Result.x + mask2Result.y);
+
+	//bubbing_01_normal_mask
+	float fNormalMask01 = maskRGB0.r * fMaskResult * 2.0f;
+
+	bubbingnormal2 = bubbingnormal2 * fMaskResult;
+
+	fNormalMask = saturate(fNormalMask01 + fNormalMask02);
+	fBubbingNormal = float3(0,0,0.5f) + bubbingnormal2 + (bubbingnormal0 + bubbingnormal1) * mask1Result;
+#else
+	fNormalMask = saturate(fNormalMask02);
+	fBubbingNormal = float3(0,0,0.5f) + (bubbingnormal0 + bubbingnormal1) * mask1Result;
+#endif
+
+	//return
+	fBubbingNormal = normalize(fBubbingNormal);
+}
+
+
+// //light band
+float2 light_band_tilling = float2(3, 2);
+float4 light_band_speed_mask = float4(0.1f, 1.0f, 0.025, 1.0f);
+float4 glow_color_01 = float4(0, 0.374, 0.241, 0.05);
+float4 glow_color_02 = float4(0, 0.436, 0.1914, 0.05);
+
+void GenerateLightBand(float2 uv, float fTimeSmall, float fNormalMask, out float fBandColor0, out float4 vBandColor)
+{
+	float4 vTimeSpeed = fTimeSmall * light_band_speed_mask;
+
+	//band
+	float2 uv0 = light_band_tilling * uv;
+	uv0 = rotate2D(uv0, 0, 0.001f * vTimeSpeed.y);
+	float fBandColor = tex2D(water_color, uv0).a + 0.35;
+	fBandColor = pow(abs(fBandColor), 2.5) * 6;
+
+	float2 uv1 = uv + float2(0, -0.25f) * vTimeSpeed.x;
+	float fBandMask1 = tex2D(bubbing_mask, uv1).b;
+
+	float2 uv2 = rotate2D(uv, 0, 0.01f * vTimeSpeed.x);
+	uv2 = uv2 + float2(-0.002f, 0) * vTimeSpeed.x;
+	float fBandMask2 = tex2D(bubbing_mask, uv2).b;
+
+	fBandColor = fBandColor * (fBandMask1 + fBandMask2);
+
+	float fBandColor1 = fBandColor * fNormalMask * 0.7f;
+
+#if (LIGHTING_QUALITY <= 1)
+	//out
+	vBandColor = fBandColor1 * glow_color_02;
+#else
+	vBandColor = fNormalMask * glow_color_02;
+#endif
+
+#if (LIGHTING_QUALITY == 0)
+	float2 uv3 = rotate2D(uv, float2(1,0), 0.18 * vTimeSpeed.z);
+	uv3 = uv3 + float2(-0.02, 0.015) * vTimeSpeed.w;
+	float fBandMask3 = tex2D(bubbing_mask01, uv3).b;
+
+	float2 uv4 = uv + 0.1f * vTimeSpeed.z;
+	float fBandMask4 = tex2D(bubbing_mask01, uv4).b;
+
+	fBandColor0 = fBandMask3 * fBandMask4 * 3;
+
+	//out
+	fBandColor0 = pow(fBandColor * fBandColor0, 1.5);
+
+	float4 vBandColor0 = min(fBandColor0, 1.5) * glow_color_01;
+
+	//out
+	vBandColor = vBandColor + vBandColor0;
+#else
+	fBandColor0 = 0.0f;
+#endif
+}
+
+float2 water_texture_tilling = float2(0.5f, 0.4f);
+float2 water_texture_speed = float2(0.5f, 0.8f);
+float4 water_texture_color = float4(0, 0.374f, 0.0237f, 0.2f) * 0.2f;
+float water_texture_brightness = 0.08;
+
+void GenerateBubbingDiffuse(float2 uv, float fTimeSmall, float fBumpHeight, float2 vTangent, float4 vBandColor, out float4 vBubbingColor)
+{
+	// float2 water_texture_tilling = float2(0.5f, 0.4f);
+	// float2 water_texture_speed = float2(1.0f, 0.8f);
+	// float4 water_texture_color = float4(0, 0.374f, 0.0237f, 0.2f) * 0.2f;
+	// float water_texture_brightness = 0.08;
+
+	float4 uv0 = uv.xyxy * water_texture_tilling.xxyy;;
+	uv0.xy = rotate2D(uv0.xy, 0.5f, 0.015f * fTimeSmall * water_texture_speed.x);
+	uv0 = uv0 + float4(-0.01f, 0, 0.01f, 0.01f) * water_texture_speed.xxyy * fTimeSmall;
+	uv0 = uv0 + (0.05f * fBumpHeight - 0.005f) * vTangent.xyxy;
+	float4 water_color0 = tex2D(water_color, uv0.xy);
+	float4 water_color1 = tex2D(water_color, uv0.zw);
+
+	vBubbingColor = water_color0 * water_color1 + water_texture_color;
+#if (LIGHTING_QUALITY == 0)
+	vBubbingColor = (pow(vBubbingColor, 1.3) + vBandColor * 0.5f) * water_texture_brightness;
+#else
+	vBubbingColor = (pow(vBubbingColor, 1.3) * 2.0f + vBandColor * 0.5f) * water_texture_brightness;
+#endif
+}
+
+float3 foam_params = float3(8.0f, 0.1f, 1.7f);//foam_tilling, foam_speed, foam_range
+float4 seafoam_color = float4(0.114, 0.485, 0.289, 0.05) * 3.0f;
+float2 foam_mask_speed = float2(0.005f, 0.005f);//rotate and move
+
+void GenerateFoam(float2 uv, float fTimeSmall, float fBumpHeight, float2 vTangent, float fBandColor0, out float fFoamMask, out float4 vFoamColor)
+{
+	// float3 foam_params = float3(8.0f, 0.1f, 1.7f);//foam_tilling, foam_speed, foam_range
+	// float4 seafoam_color = float4(0.114, 0.485, 0.289, 0.05) * 3.0f;
+	// float2 foam_mask_speed = float2(0.005f, 0.005f);//rotate and move
+
+	float4 uv0 = uv.xyxy * (foam_params.xxxx + float4(0.0f, 0.0f, 1.0f, 1.0f));
+	uv0 = uv0 + float4(-0.15f, 0.0f, 0.1f, -0.1f) * foam_params.y * fTimeSmall;
+	float foam_0 = tex2D(bubbing_mask01, uv0.xy).a;
+	float foam_1 = tex2D(bubbing_mask01, uv0.zw).a;
+	foam_0 = foam_0 * foam_1;
+	vFoamColor = seafoam_color * foam_0;
+
+	//foam mask
+	float2 uv1 = uv + (0.1f * fBumpHeight - 0.01f) * vTangent;
+	uv1 = rotate2D(uv1, 0.5f, fTimeSmall * foam_mask_speed.x);
+	uv1 = uv1 + fTimeSmall * foam_mask_speed.y;
+	fFoamMask = tex2D(bubbing_normal2, uv1).b;
+	fFoamMask = saturate(pow(fFoamMask, foam_params.z) + 0.8f + 0.5f * fBandColor0);
+}

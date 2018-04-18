@@ -1,0 +1,238 @@
+// (C)2015 Garena Lab
+// hbao.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Global variables
+//=============================================================================
+float3      g_ao_radius;
+float       g_ao_anglebias;
+float       g_ao_contrast;
+float       g_ao_attenuation;
+float4      g_ao_resolution;
+float4      g_ao_focal_len;
+
+float2 g_res2random;
+
+float4x4    mProj;
+
+#define M_PI 3.14159265f
+
+#if LIGHTING_QUALITY == 0
+#define N_DIR 6
+#define N_STEP 3
+#define N_STEP_SQR 9
+#define N_DIR_INV 0.16667f
+#else
+#define N_DIR 3
+#define N_STEP 3
+#define N_STEP_SQR 9
+#define N_DIR_INV 0.33333f
+#endif
+
+#define AO_ZCLIP 3000
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float2 Texcoord0 : TEXCOORD0;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler depth;
+sampler randomtex;
+
+
+
+
+float3 uv_to_eye(float2 uv, float eye_z)
+{
+    uv = (uv * float2(2.0f, -2.0f) - float2(1.0f, -1.0f));
+    return float3(uv * g_ao_focal_len.zw * eye_z, eye_z);
+}
+
+// Get position in eye space from a uv in UV space
+float3 fetch_eye_pos(float2 uv)
+{
+    float z = tex2D(depth, uv);
+    z = mProj._43 / (z + mProj._33);
+    return uv_to_eye(uv, z);
+}
+
+float length2(float3 v) { return dot(v, v); }
+
+float3 min_diff(float3 p, float3 p_right, float3 p_left)
+{
+    float3 v1 = p_right - p;
+    float3 v2 = p - p_left;
+    
+    return (length2(v1) < length2(v2)) ? v1 : v2;
+    //return lerp(v2, v1, step(length2(v1), lengt2(v2)));
+}
+
+float2 rotate_direction(float2 dir, float2 cos_sin)
+{
+    return float2(dir.x*cos_sin.x - dir.y*cos_sin.y, 
+                  dir.x*cos_sin.y + dir.y*cos_sin.x);
+}
+
+float2 snap_uv_offset(float2 uv)
+{
+    return round(uv * g_ao_resolution.xy) * g_ao_resolution.zw;
+}
+
+float tan_to_sin(float x)
+{
+    return x * rsqrt(x*x + 1.0f);
+}
+
+float tangent(float3 t)
+{
+	float invlength = rsqrt(dot(t.xy,t.xy));
+    return -t.z * invlength;
+}
+
+float tangent(float3 p, float3 s)
+{
+    return (p.z - s.z) / length(s.xy - p.xy);
+    //return tangent(s - p);
+}
+
+float biased_tangent(float3 t)
+{
+    float phi = atan(tangent(t)) + g_ao_anglebias;
+    return tan(min(phi, M_PI*0.4999f)); 
+}
+
+float falloff(float r)
+{
+    return 1.0f - g_ao_attenuation * r * r;
+}
+
+float accumulated_hbao(float2 delta_uv, float2 uv0, float3 p, float rand_step, float3 dp_du, float3 dp_dv)
+{
+    ///////////////////////////////////
+    // Randomize starting point within the first sample distance
+    float2 uv1 = uv0 + snap_uv_offset(rand_step * delta_uv);
+    // Snap increments to pixels to avoid disparities between xy 
+    // and z sample locations and sample along a line   
+    delta_uv = snap_uv_offset(delta_uv); 
+    
+    // Compute tangent vector using the tangent plane
+    float3 t = delta_uv.x * dp_du + delta_uv.y * dp_dv;
+    float tan_h = biased_tangent(t);
+    float sin_h = tan_h / sqrt(1.0f + tan_h * tan_h);
+
+    float ao = 0;
+
+    [unroll]
+    for (int j = 1; j < N_STEP; ++j)
+    {
+        uv1 += delta_uv;
+        float3 s = fetch_eye_pos(uv1);
+
+        // Ignore any samples outside the radius of influence
+        float d2 = length2(s - p);
+        if (d2 < g_ao_radius.y * N_STEP_SQR)
+        {
+            float tan_s = tangent(p, s); 
+            [branch]
+            if (tan_s > tan_h)
+            {
+                // Accumulate AO between the horizon and the sample
+                float sin_s = tan_s / sqrt(1.0f + tan_s * tan_s);
+                float r = sqrt(d2) * g_ao_radius.z * N_DIR_INV;
+                ao += falloff(r) * (sin_s - sin_h) * 2;
+                // Update the current horizon angle
+                tan_h = tan_s;
+                sin_h = sin_s;
+            }
+        }
+    }
+
+    return ao;
+}
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+
+    float2 uv = In.Texcoord0;
+
+    /*
+    //output depth
+    float fZ = tex2D(depth, uv); 
+    fZ = mProj._43 / (fZ + mProj._33);
+
+    Out.Color = fZ / 10000;
+    Out.Color.a = 1.0f;
+    return Out;*/
+
+
+	float3 p =  fetch_eye_pos(uv);
+    clip(AO_ZCLIP - p.z);
+
+    // Project the radius of influence g_R from eye space to texture space.
+    // The scaling by 0.5 is to go from [-1,1] to [0,1].
+    float2 step_size = 0.5 * g_ao_radius.x * g_ao_focal_len.xy / p.z;
+
+    // Early out if the projected radius is smaller than 1 pixel.
+    float num_steps = min(N_STEP, min(step_size.x * g_ao_resolution.x, step_size.y * g_ao_resolution.y));
+
+    clip(num_steps - 1.0f);
+
+    float3 p_left = fetch_eye_pos(uv + float2(-g_ao_resolution.z, 0));
+    float3 p_right = fetch_eye_pos(uv + float2(g_ao_resolution.z, 0));
+    float3 p_top = fetch_eye_pos(uv + float2(0, g_ao_resolution.w));
+    float3 p_bottom = fetch_eye_pos(uv + float2(0, -g_ao_resolution.w));
+
+  /*
+    //output normal
+    float3 n = normalize(cross(p_right - p_left, p_top - p_bottom));
+    Out.Color.rgb = n;// * 0.5f + 0.5f;
+    Out.Color.a = 1.0f;
+    return Out;*/
+
+    // Screen-aligned basis for the tangent plane
+    float3 dp_du = min_diff(p, p_right, p_left);
+    float3 dp_dv = min_diff(p, p_top, p_bottom) * (g_ao_resolution.y * g_ao_resolution.z);
+
+	float2 random_uv = frac(In.Texcoord0 * g_res2random);
+    // (cos(alpha),sin(alpha),jitter)
+    float3 rand = tex2D(randomtex, random_uv).xyz;
+
+    float ao = 0;
+    float alpha = 2.0f * M_PI / N_DIR;
+
+    [unroll]
+    for (int d = 0; d < N_DIR; d ++)
+    {
+        
+    	float angle = alpha * d;
+        float2 dir = float2(cos(angle), sin(angle));
+        
+        float2 delta_uv = rotate_direction(dir, rand.xy) * step_size.xy;
+
+        ao += accumulated_hbao(delta_uv, uv, p, rand.z, dp_du, dp_dv);
+    }
+
+	Out.Color = 1.0 - ao * N_DIR_INV * g_ao_contrast;
+    Out.Color.g = p.z;
+
+	return Out;
+}
+

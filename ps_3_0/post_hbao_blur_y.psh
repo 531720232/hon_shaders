@@ -1,0 +1,101 @@
+// (C)2015 Garena Lab
+// hbao_blur_y.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Global variables
+//=============================================================================
+float4 		g_ao_resolution;
+float4x4    mProj;
+float 		g_blur_falloff;
+float2 		g_blur_sharpness;
+
+#if LIGHTING_QUALITY == 0
+#define 	BLUR_SIZE	4
+#else
+#define 	BLUR_SIZE	2
+#endif
+
+#define 	AO_ZCLIP 	3000
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float2 Texcoord0 : TEXCOORD0;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler scenenofilter;
+sampler depth;
+sampler aobuffer_tmp;
+//sampler aobuffer;
+
+
+float blurfunc(float2 color, float r, float center_d, inout float w_total)
+{
+//	float2 color = tex2D(aobuffer, uv);
+	float c = color.r; 
+	float d = color.g;
+	float diff_d = d - center_d;
+	float w = exp(- r * r * g_blur_falloff - diff_d * diff_d * g_blur_sharpness.x);
+	w_total += w;
+
+	return w * c;
+}
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+
+	float2 uv0 = In.Texcoord0 + g_ao_resolution.zw;
+
+	float2 color0 = tex2D(aobuffer_tmp, uv0).xy;
+	float d = color0.y;
+
+	clip(AO_ZCLIP - d);
+
+	float b = 0;
+	float w_total = 0;
+
+	//[-BLUR_SIZE, 0)
+	[unroll]
+	for (int r = -BLUR_SIZE; r < 0; r ++)
+	{
+		float2 uv1 = uv0 + float2(0.0f, r * g_ao_resolution.w);
+		float2 color = tex2D(aobuffer_tmp, uv1).xy;
+		b += blurfunc(color, (float)r, d, w_total);
+	}
+
+	//0
+	b += color0.x;
+	w_total += 1.0f;
+
+	//(0, BLUR_SIZE]
+	[unroll]
+	for (int r = 1; r <= BLUR_SIZE; r ++)
+	{
+		float2 uv1 = uv0 + float2(0.0f, r * g_ao_resolution.w);
+		float2 color = tex2D(aobuffer_tmp, uv1).xy;
+		b += blurfunc(color, (float)r, d, w_total);
+	}
+
+	float4 color = tex2D(scenenofilter, In.Texcoord0);
+	Out.Color = b / w_total * color;
+	//Out.Color = tex2D(aobuffer, uv0).r;
+
+	return Out;
+}
+

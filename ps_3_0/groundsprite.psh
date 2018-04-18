@@ -1,0 +1,59 @@
+// (C)2006 S2 Games
+// effect.psh
+// 
+// Default K2 Effect pixel shader
+//=============================================================================
+
+//=============================================================================
+// Global variables
+//=============================================================================
+float4x4	mScreenToDecalMatrix;
+float4x4	mProj;
+float4		vSpriteColor;
+float4 		vSpriteTexCoord;
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float4 ScreenPos : TEXCOORD0;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler diffuse;
+sampler depth;
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+	float2 texcoord = In.ScreenPos.xy / In.ScreenPos.w;
+	texcoord = texcoord * float2(0.5f, -0.5f) + 0.5f;
+
+	float fDepth = tex2D(depth, texcoord).r;
+
+	float fW = mProj._43 / (fDepth + mProj._33);
+	float4 decalPos = float4(In.ScreenPos.xy / In.ScreenPos.w, fDepth, 1) * fW;
+	decalPos = mul(decalPos, mScreenToDecalMatrix);
+
+	clip(1.0f - decalPos.y);
+	clip(decalPos.y);
+	clip(1.0f - decalPos.x);
+	clip(decalPos.x);
+
+	float2 tex = lerp(vSpriteTexCoord.xy, vSpriteTexCoord.zw, decalPos.xy);
+
+	Out.Color = tex2D(diffuse, tex) * vSpriteColor;
+	
+	return Out;
+}

@@ -1,0 +1,55 @@
+// (C)2006 S2 Games
+// skybox_bias.psh
+// 
+// Sky-box pixel shader
+//=============================================================================
+#include "../common/fog.h"
+
+//=============================================================================
+// Global variables
+//=============================================================================
+float fAlphaLeak;
+float fSkyBoxFogDensity;
+
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float4 Position  : POSITION;
+	float4 Color0    : COLOR0;
+	float3 Texcoord0 : TEXCOORD0;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler skybox;
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+
+	#if (FOG_TYPE != 0) // FOG_NONE
+	float fFog = fSkyBoxFogDensity;
+#else
+	float fFog = 0.0f;
+#endif
+	
+	float3 vFinalColor = texCUBE(skybox, In.Texcoord0).rgb * In.Color0.rgb;
+
+	Out.Color.rgb = lerp(vFinalColor, vFogColor, fFog);
+		
+	Out.Color.a = saturate(In.Color0.a * (1.0 - fAlphaLeak) + fAlphaLeak);
+	
+	return Out;
+}

@@ -1,0 +1,277 @@
+// (C)2015 Garena Lab
+// hbao_blur_x.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Global variables
+//=============================================================================
+
+//--------------------------------------------------------------------------------------
+// Gather pattern
+//--------------------------------------------------------------------------------------
+
+// Gather defines
+#define RING_1    (1)
+#define RING_2    (2)
+#define RING_3    (3)
+#define RING_4    (4)
+#define NUM_RING_1_GATHERS    (2)
+#define NUM_RING_2_GATHERS    (6)
+#define NUM_RING_3_GATHERS    (12)
+#define NUM_RING_4_GATHERS    (20)
+
+// Ring sample pattern
+static const float2 g_f2HDAORingPattern[NUM_RING_4_GATHERS] = 
+{
+    // Ring 1
+    { 1, -1 },
+    { 0, 1 },
+    
+    // Ring 2
+    { 0, 3 },
+    { 2, 1 },
+    { 3, -1 },
+    { 1, -3 },
+        
+    // Ring 3
+    { 1, -5 },
+    { 3, -3 },
+    { 5, -1 },
+    { 4, 1 },
+    { 2, 3 },
+    { 0, 5 },
+    
+    // Ring 4
+    { 0, 7 },
+    { 2, 5 },
+    { 4, 3 },
+    { 6, 1 },
+    { 7, -1 },
+    { 5, -3 },
+    { 3, -5 },
+    { 1, -7 },
+};
+
+// Ring weights
+static const float4 g_f4HDAORingWeight[NUM_RING_4_GATHERS] = 
+{
+    // Ring 1 (Sum = 5.30864)
+    { 1.00000, 0.50000, 0.44721, 0.70711 },
+    { 0.50000, 0.44721, 0.70711, 1.00000 },
+    
+    // Ring 2 (Sum = 6.08746)
+    { 0.30000, 0.29104, 0.37947, 0.40000 },
+    { 0.42426, 0.33282, 0.37947, 0.53666 },
+    { 0.40000, 0.30000, 0.29104, 0.37947 },
+    { 0.53666, 0.42426, 0.33282, 0.37947 },
+    
+    // Ring 3 (Sum = 6.53067)
+    { 0.31530, 0.29069, 0.24140, 0.25495 },
+    { 0.36056, 0.29069, 0.26000, 0.30641 },
+    { 0.26000, 0.21667, 0.21372, 0.25495 },
+    { 0.29069, 0.24140, 0.25495, 0.31530 },
+    { 0.29069, 0.26000, 0.30641, 0.36056 },
+    { 0.21667, 0.21372, 0.25495, 0.26000 },
+    
+    // Ring 4 (Sum = 7.00962)
+    { 0.17500, 0.17365, 0.19799, 0.20000 },
+    { 0.22136, 0.20870, 0.24010, 0.25997 },
+    { 0.24749, 0.21864, 0.24010, 0.28000 },
+    { 0.22136, 0.19230, 0.19799, 0.23016 },
+    { 0.20000, 0.17500, 0.17365, 0.19799 },
+    { 0.25997, 0.22136, 0.20870, 0.24010 },
+    { 0.28000, 0.24749, 0.21864, 0.24010 },
+    { 0.23016, 0.22136, 0.19230, 0.19799 },
+};
+
+/*
+static const float g_fRingWeightsTotal[RING_4] =
+{
+    5.30864,
+    11.39610,
+    17.92677,
+    24.93639,
+};*/
+static const float g_fRingWeightsTotal[RING_4] =
+{
+    10.61728,
+    22.7922,
+    35.85354,
+    49.87278,
+};
+
+#define NUM_NORMAL_LOADS (4)
+static const float2 g_f2NormalLoadPattern[NUM_NORMAL_LOADS] = 
+{
+    { 1, 8 },
+    { 8, -1 },
+    { 5, 4 },
+    { 4, -4 },
+};
+
+#define AO_ZCLIP 3000
+
+float4 		g_ao_resolution;
+float4x4    mProj;
+float4      g_ao_focal_len;
+
+float g_fHDAORejectRadius;          // HDAO param
+float g_fHDAOIntensity;             // HDAO param
+float g_fHDAOAcceptRadius;          // HDAO param
+float g_fAcceptAngle;               // Accept angle
+
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float2 Texcoord0 : TEXCOORD0;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler depth;
+
+float4 fetch_z_samples(float2 uv)
+{
+	float4 f4Ret;
+	f4Ret.x = tex2D(depth, uv + float2(0, 1) * g_ao_resolution.zw);
+	f4Ret.y = tex2D(depth, uv + float2(1, 1) * g_ao_resolution.zw);
+	f4Ret.z = tex2D(depth, uv + float2(1, 0) * g_ao_resolution.zw);
+	f4Ret.w = tex2D(depth, uv + float2(0, 0) * g_ao_resolution.zw);
+
+    f4Ret = mProj._43 / (f4Ret + mProj._33);
+
+    return f4Ret;
+}
+
+float3 uv_to_eye(float2 uv, float eye_z)
+{
+    uv = (uv * float2(2.0f, -2.0f) - float2(1.0f, -1.0f));
+    return float3(uv * g_ao_focal_len.zw * eye_z, eye_z);
+}
+
+// Get position in eye space from a uv in UV space
+float3 fetch_eye_pos(float2 uv)
+{
+    float z = tex2D(depth, uv);
+    z = mProj._43 / (z + mProj._33);
+    return uv_to_eye(uv, z);
+}
+
+float3 fetch_eye_normal(float2 uv)
+{
+	float3 p_left = fetch_eye_pos(uv + float2(-g_ao_resolution.z, 0));
+    float3 p_right = fetch_eye_pos(uv + float2(g_ao_resolution.z, 0));
+    float3 p_top = fetch_eye_pos(uv + float2(0, g_ao_resolution.w));
+    float3 p_bottom = fetch_eye_pos(uv + float2(0, -g_ao_resolution.w));
+
+    //output normal
+    float3 n = normalize(cross(p_right - p_left, p_top - p_bottom));
+
+    return n;
+ }
+
+ float normalRejectionTest(float2 uv)
+ {
+ 	float3 f3N1;
+ 	float3 f3N2;
+ 	float fDot;
+ 	float fSummedDot = 0.0f;
+ 	float2 f2MirrorPattern;
+ 	float2 f2OffsetUV;
+ 	float2 f2MirrorOffsetUV;
+
+ 	for (int iNormal = 0; iNormal < NUM_NORMAL_LOADS; iNormal ++)
+ 	{
+        f2MirrorPattern = -g_f2NormalLoadPattern[iNormal] - 1.0f;
+        f2OffsetUV = uv + g_f2NormalLoadPattern[iNormal] * g_ao_resolution.zw;//no need to clamp, since depth sampler is uv clamped
+        f2MirrorOffsetUV = uv + f2MirrorPattern * g_ao_resolution.zw;
+
+        f3N1 = fetch_eye_normal(f2OffsetUV);
+        f3N2 = fetch_eye_normal(f2MirrorOffsetUV);
+
+        fDot = dot(f3N1, f3N2);
+        fSummedDot += step(fDot, g_fAcceptAngle) * (1.0f - abs(fDot) * 0.25f);
+        //fSummedDot += (fDot > g_fAcceptAngle) ? 0.0f : (1.0f - (abs(fDot) * 0.25f));
+ 	}
+
+ 	return (0.5f + fSummedDot * 0.25f);
+ }
+
+float fetch_occlusion(float2 uv, int numRingGathers, int numRings)
+{
+    float fDepth = tex2D(depth, uv);
+    float fCenterZ = mProj._43 / (fDepth + mProj._33);
+    clip(AO_ZCLIP - fCenterZ);
+
+    //put kernelscale into g_ao_resolution.xy
+    //float2 f2KernelScale = float2( g_ao_resolution.x / 1024.0f, g_ao_resolution.y / 700.0f);
+	float2 f2MirrorScreenCoord;
+	float2 f2OffsetUV;
+	float2 f2MirrorOffsetUV;
+	float4 f4SampledZ[2];
+	float4 f4Compare[2];
+	float4 f4Occlusion = 0.0f;
+
+	//float fDot = normalRejectionTest(uv);
+	//clip(fDot - 0.5f);
+
+	{
+        [unroll]
+		for (int iGather = 0; iGather < numRingGathers; iGather ++)
+		{
+            float2 f2RingPattern = g_ao_resolution.xy * g_f2HDAORingPattern[iGather];
+			//float2 f2RingPattern = f2KernelScale * g_f2HDAORingPattern[iGather];
+			float2 f2MirrorPattern = -f2RingPattern - 1.0f;
+			f2OffsetUV = uv + f2RingPattern * g_ao_resolution.zw;
+			f2MirrorOffsetUV = uv + f2MirrorPattern * g_ao_resolution.zw;
+
+			f4SampledZ[0] = fetch_z_samples(f2OffsetUV);
+			f4SampledZ[1] = fetch_z_samples(f2MirrorOffsetUV);
+
+			float4 f4Diff = fCenterZ.rrrr - f4SampledZ[0];
+			f4Compare[0] = step(f4Diff, g_fHDAORejectRadius.xxxx);   //(f4Diff < g_fHDAORejectRadius.xxxx) ? 1.0f : 0.0f;
+			f4Compare[0] *= step(g_fHDAOAcceptRadius.xxxx, f4Diff);  //(f4Diff > g_fHDAOAcceptRadius.xxxx) ? 1.0f : 0.0f;
+
+			f4Diff = fCenterZ - f4SampledZ[1];
+			f4Compare[1] = step(f4Diff, g_fHDAORejectRadius.xxxx);   //(f4Diff < g_fHDAORejectRadius.xxxx) ? 1.0f : 0.0f;
+			f4Compare[1] *= step(g_fHDAOAcceptRadius.xxxx, f4Diff);  //(f4Diff > g_fHDAOAcceptRadius.xxxx) ? 1.0f : 0.0f;
+
+			f4Occlusion.xyzw += g_f4HDAORingWeight[iGather].xyzw * f4Compare[0].xyzw * f4Compare[1].zwxy;
+            //f4Occlusion.xyzw += (g_f4HDAORingWeight[iGather].xyzw * (f4Compare[0].xyzw * f4Compare[1].zwxy) * fDot);
+		}
+	}
+
+	float fOcclusion = dot(f4Occlusion, 1) / g_fRingWeightsTotal[numRings - 1];
+	fOcclusion = 1.0f - saturate(fOcclusion * g_fHDAOIntensity);
+
+	return fOcclusion;
+}
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+
+	float2 uv0 = In.Texcoord0;// + g_ao_resolution.zw * 0.5f;
+
+	float ao = fetch_occlusion(uv0, NUM_RING_2_GATHERS, RING_2);
+
+	Out.Color = ao;
+
+
+	return Out;
+}
+

@@ -1,0 +1,150 @@
+// (C)2008 S2 Games
+// post_bloom.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Constants
+//=============================================================================
+static const int KERNEL_SIZE = 13;
+
+static const float BLUR_WEIGHTS[KERNEL_SIZE] = 
+{
+	0.003450f,
+	0.012483f,
+	0.035351f,
+	0.05f,//0.078353f,
+	0.1f,//0.135933f,
+	0.2f,//0.284604f,
+	0.6f,//0.999654f,
+	0.2f,//0.284604f,
+	0.1f,//0.135933f,
+	0.05f,//0.078353f,
+	0.035351f,
+	0.012483f,
+	0.003450f
+};
+
+static float3 GRAY_WEIGHT = float3( 0.299f, 0.587f, 0.114f );
+
+/*
+static const float GRAY_SCALE[KERNEL_SIZE] = 
+{
+	0.003450f,
+	0.012483f,
+	0.035351f,
+	0.078353f,
+	0.135933f,
+	0.184604f,
+	0.399654f,
+	0.184604f,
+	0.135933f,
+	0.078353f,
+	0.035351f,
+	0.012483f,
+	0.003450f
+};*/
+
+float grayScaleOutline;
+
+
+//=============================================================================
+// Global variables
+//=============================================================================
+//float	fBrightness;
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float2 Texcoord0 : TEXCOORD0;
+	float4 Texcoord1 : TEXCOORD1;
+	float4 Texcoord2 : TEXCOORD2;
+	float4 Texcoord3 : TEXCOORD3;
+	float4 Texcoord4 : TEXCOORD4;
+	float4 Texcoord5 : TEXCOORD5;
+	float4 Texcoord6 : TEXCOORD6;
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+sampler image;
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+		
+	Out.Color = 0.0f;
+	
+	float4 color0 = 0.0f;
+	float gray0 = 0.0f;
+	
+	/*
+	color0 = tex2D(image, In.Texcoord0.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline) * BLUR_WEIGHTS[0];
+	
+	color0 = tex2D(image, In.Texcoord1.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline)  * BLUR_WEIGHTS[1];
+	
+	color0 = tex2D(image, In.Texcoord1.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline)  * BLUR_WEIGHTS[2];*/
+	
+	color0 = tex2D(image, In.Texcoord2.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 /*+ gray0 * grayScaleOutline*/)  * BLUR_WEIGHTS[3];
+	
+	color0 = tex2D(image, In.Texcoord2.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 /*+ gray0 * grayScaleOutline*/)  * BLUR_WEIGHTS[4];
+	
+	color0 = tex2D(image, In.Texcoord3.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline)  * BLUR_WEIGHTS[5];
+	
+	color0 = tex2D(image, In.Texcoord3.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline)  * BLUR_WEIGHTS[6];
+	
+	color0 = tex2D(image, In.Texcoord4.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * grayScaleOutline)  * BLUR_WEIGHTS[7];
+	
+	color0 = tex2D(image, In.Texcoord4.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 /*+ gray0 * grayScaleOutline*/)  * BLUR_WEIGHTS[8];
+	
+
+	color0 = tex2D(image, In.Texcoord5.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 /*+ gray0 * grayScaleOutline*/)  * BLUR_WEIGHTS[9];
+	
+	/*
+	color0 = tex2D(image, In.Texcoord5.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * outline_texelSizeCount)  * BLUR_WEIGHTS[10];
+	
+	color0 = tex2D(image, In.Texcoord6.xy);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * outline_texelSizeCount)  * BLUR_WEIGHTS[11];
+	
+	color0 = tex2D(image, In.Texcoord6.zw);
+	gray0 = dot(color0.rgb, GRAY_WEIGHT);
+	Out.Color += (color0 + gray0 * outline_texelSizeCount)  * BLUR_WEIGHTS[12];*/
+
+	return Out;
+}
+

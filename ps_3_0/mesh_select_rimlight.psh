@@ -1,0 +1,55 @@
+// (C)2008 S2 Games
+// mesh_color_unit_team.psh
+// 
+// ...
+//=============================================================================
+
+//=============================================================================
+// Headers
+//=============================================================================
+#include "../common/common.h"
+
+//=============================================================================
+// Global variables
+//=============================================================================
+float3		vSunColor;
+
+//=============================================================================
+// Vertex shader output structure
+//=============================================================================
+struct VS_OUTPUT
+{
+	float4 Color0 : COLOR0;
+	float3 PositionOffset : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+	float3 Normal : TEXCOORDX;
+		#include "../common/inc_texcoord.h"
+};
+
+//=============================================================================
+// Pixel shader input structure
+//=============================================================================
+struct PS_OUTPUT
+{
+	float4 Color : COLOR;
+};
+
+
+//=============================================================================
+// Pixel Shader
+//=============================================================================
+PS_OUTPUT PS( VS_OUTPUT In )
+{
+	PS_OUTPUT Out;
+
+	//
+	// Rim Lighting
+	//
+	float3 vCamDirection = -normalize(In.PositionOffset);
+	float3 vRimColor = clamp(pow(1.0f - dot(vCamDirection, In.Normal), 2.0f), 0.0f, vSunColor);
+
+	Out.Color.rgb = vRimColor * In.Color0.rgb;
+	Out.Color.a = In.Color0.a;
+
+	return Out;
+}
